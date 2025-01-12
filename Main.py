@@ -1,126 +1,115 @@
+import streamlit as st
 import cv2
 import numpy as np
-import os
 import mediapipe as mp
+from HandTrackingModule import HandDetector
 
-# Constants
-brushThickness = 25
-eraserThickness = 100
+def main():
+    st.title("Virtual Painter")
 
-# Load header images
-folderPath = "navbar"
-myList = os.listdir(folderPath)
-overlayList = [cv2.imread(f'{folderPath}/{imPath}') for imPath in myList]
-print(f"Loaded {len(overlayList)} header images.")
+    # Initialize session state variables
+    if 'canvas' not in st.session_state:
+        st.session_state.canvas = np.zeros((720, 1280, 3), np.uint8)
+    if 'draw_color' not in st.session_state:
+        st.session_state.draw_color = (255, 0, 255)
+    if 'webcam_on' not in st.session_state:
+        st.session_state.webcam_on = False
+    if 'webcam_index' not in st.session_state:
+        st.session_state.webcam_index = 0
+    if 'resolution' not in st.session_state:
+        st.session_state.resolution = (1280, 720)
 
-# Initial settings
-header = overlayList[0]
-drawColor = (255, 0, 255)
+    # Sidebar controls
+    st.sidebar.header("Controls")
+    brush_thickness = st.sidebar.slider("Brush Thickness", 5, 50, 25)
+    eraser_thickness = st.sidebar.slider("Eraser Thickness", 50, 150, 100)
+    color_choice = st.sidebar.color_picker("Choose drawing color", "#FF00FF")
+    if color_choice:
+        rgb = tuple(int(color_choice.lstrip('#')[i:i+2], 16) for i in (0, 2, 4))
+        st.session_state.draw_color = (rgb[2], rgb[1], rgb[0])
 
-# Initialize webcam
-cap = cv2.VideoCapture(0)
-cap.set(3, 1280)  # Width
-cap.set(4, 720)   # Height
+    if st.sidebar.button("Clear Canvas"):
+        st.session_state.canvas = np.zeros((720, 1280, 3), np.uint8)
 
-# MediaPipe Hands setup
-mpHands = mp.solutions.hands
-hands = mpHands.Hands(static_image_mode=False, max_num_hands=1, min_detection_confidence=0.65)
-mpDraw = mp.solutions.drawing_utils
+    # Webcam controls
+    st.sidebar.subheader("Webcam Settings")
+    webcam_options = [f"Webcam {i}" for i in range(5)]
+    webcam_index = st.sidebar.selectbox("Select Webcam", options=webcam_options, index=st.session_state.webcam_index)
+    st.session_state.webcam_index = int(webcam_index.split()[-1])
 
-# Canvas for drawing
-imgCanvas = np.zeros((720, 1280, 3), np.uint8)
+    resolutions = [(640, 480), (1280, 720), (1920, 1080)]
+    resolution = st.sidebar.selectbox("Resolution", resolutions, index=resolutions.index(st.session_state.resolution))
+    st.session_state.resolution = resolution
 
-# Variables for tracking
-xp, yp = 0, 0
+    toggle_webcam = st.sidebar.button("Toggle Webcam")
+    if toggle_webcam:
+        st.session_state.webcam_on = not st.session_state.webcam_on
 
-while True:
-    # 1. Capture frame
-    success, img = cap.read()
-    if not success:
-        print("Failed to capture frame.")
-        break
-    img = cv2.flip(img, 1)
+    # Initialize hand detector
+    detector = HandDetector(detectionCon=0.65)
 
-    # 2. Detect hand landmarks
-    imgRGB = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    results = hands.process(imgRGB)
-    lmList = []
+    # Create two columns for the video feed and canvas
+    col1, col2 = st.columns(2)
+    video_placeholder = col1.empty()
+    canvas_placeholder = col2.empty()
 
-    if results.multi_hand_landmarks:
-        for handLms in results.multi_hand_landmarks:
-            for id, lm in enumerate(handLms.landmark):
-                h, w, c = img.shape
-                cx, cy = int(lm.x * w), int(lm.y * h)
-                lmList.append((id, cx, cy))
-            # Draw hand landmarks on the image
-            mpDraw.draw_landmarks(img, handLms, mpHands.HAND_CONNECTIONS)
+    # Variables for tracking previous positions
+    xp, yp = 0, 0
 
-    # 3. If landmarks are detected, process gestures
-    if lmList:
-        # Tip of index and middle fingers
-        x1, y1 = lmList[8][1:]  # Index finger tip
-        x2, y2 = lmList[12][1:]  # Middle finger tip
+    if st.session_state.webcam_on:
+        cap = cv2.VideoCapture(st.session_state.webcam_index)
+        cap.set(3, st.session_state.resolution[0])
+        cap.set(4, st.session_state.resolution[1])
 
-        # 4. Check which fingers are up
-        fingers = [0, 0, 0, 0, 0]
-        if len(lmList) >= 21:  # Ensure all landmarks are available
-            fingers[0] = 1 if lmList[4][1] < lmList[3][1] else 0  # Thumb
-            fingers[1] = 1 if lmList[8][2] < lmList[6][2] else 0  # Index
-            fingers[2] = 1 if lmList[12][2] < lmList[10][2] else 0  # Middle
-            fingers[3] = 1 if lmList[16][2] < lmList[14][2] else 0  # Ring
-            fingers[4] = 1 if lmList[20][2] < lmList[18][2] else 0  # Pinky
+        while True:
+            success, img = cap.read()
+            if not success:
+                st.error("Failed to capture frame from webcam.")
+                break
 
-        # 5. Selection mode (two fingers up)
-        if fingers[1] and fingers[2] and not fingers[3]:
-            xp, yp = 0, 0
-            print("Selection Mode")
-            if y1 < 125:
-                if 250 < x1 < 450:
-                    header = overlayList[0]
-                    drawColor = (255, 0, 255)
-                elif 550 < x1 < 750:
-                    header = overlayList[1]
-                    drawColor = (255, 0, 0)
-                elif 800 < x1 < 950:
-                    header = overlayList[2]
-                    drawColor = (0, 255, 0)
-                elif 1050 < x1 < 1200:
-                    header = overlayList[3]
-                    drawColor = (0, 0, 0)
-            cv2.rectangle(img, (x1, y1 - 25), (x2, y2 + 25), drawColor, cv2.FILLED)
+            img = cv2.flip(img, 1)
+            img = detector.findHands(img)
+            lmList, bbox = detector.findPosition(img, draw=False)
 
-        # 6. Drawing mode (only index finger up)
-        if fingers[1] and not fingers[2]:
-            cv2.circle(img, (x1, y1), 15, drawColor, cv2.FILLED)
-            print("Drawing Mode")
-            if xp == 0 and yp == 0:
-                xp, yp = x1, y1
+            if lmList:
+                x1, y1 = lmList[8][1:]
+                x2, y2 = lmList[12][1:]
+                fingers = detector.fingersUp()
 
-            if drawColor == (0, 0, 0):
-                cv2.line(img, (xp, yp), (x1, y1), drawColor, eraserThickness)
-                cv2.line(imgCanvas, (xp, yp), (x1, y1), drawColor, eraserThickness)
-            else:
-                cv2.line(img, (xp, yp), (x1, y1), drawColor, brushThickness)
-                cv2.line(imgCanvas, (xp, yp), (x1, y1), drawColor, brushThickness)
+                if fingers[1] and fingers[2]:
+                    xp, yp = 0, 0
+                    cv2.rectangle(img, (x1, y1 - 25), (x2, y2 + 25), st.session_state.draw_color, cv2.FILLED)
 
-            xp, yp = x1, y1
+                if fingers[1] and not fingers[2]:
+                    cv2.circle(img, (x1, y1), 15, st.session_state.draw_color, cv2.FILLED)
 
-    # 7. Merge canvas and webcam feed
-    imgGray = cv2.cvtColor(imgCanvas, cv2.COLOR_BGR2GRAY)
-    _, imgInv = cv2.threshold(imgGray, 50, 255, cv2.THRESH_BINARY_INV)
-    imgInv = cv2.cvtColor(imgInv, cv2.COLOR_GRAY2BGR)
-    img = cv2.bitwise_and(img, imgInv)
-    img = cv2.bitwise_or(img, imgCanvas)
+                    if xp == 0 and yp == 0:
+                        xp, yp = x1, y1
 
-    # 8. Add header to the frame
-    img[0:125, 0:1280] = header
+                    if st.session_state.draw_color == (0, 0, 0):
+                        cv2.line(st.session_state.canvas, (xp, yp), (x1, y1), st.session_state.draw_color, eraser_thickness)
+                    else:
+                        cv2.line(st.session_state.canvas, (xp, yp), (x1, y1), st.session_state.draw_color, brush_thickness)
 
-    # 9. Display the result
-    cv2.imshow("Image", img)
-    cv2.imshow("Canvas", imgCanvas)
-    key = cv2.waitKey(1)
-    if key == 27:  # Press 'Esc' to exit
-        break
+                    xp, yp = x1, y1
 
-cap.release()
-cv2.destroyAllWindows()
+            imgGray = cv2.cvtColor(st.session_state.canvas, cv2.COLOR_BGR2GRAY)
+            _, imgInv = cv2.threshold(imgGray, 50, 255, cv2.THRESH_BINARY_INV)
+            imgInv = cv2.cvtColor(imgInv, cv2.COLOR_GRAY2BGR)
+            img = cv2.bitwise_and(img, imgInv)
+            img = cv2.bitwise_or(img, st.session_state.canvas)
+
+            img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            canvas_rgb = cv2.cvtColor(st.session_state.canvas, cv2.COLOR_BGR2RGB)
+
+            video_placeholder.image(img_rgb, channels="RGB", use_container_width=True)
+            canvas_placeholder.image(canvas_rgb, channels="RGB", use_container_width=True)
+
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
+
+        cap.release()
+        cv2.destroyAllWindows()
+
+if __name__ == "__main__":
+    main()
